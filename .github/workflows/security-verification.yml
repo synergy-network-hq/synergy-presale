@@ -1,0 +1,63 @@
+name: Isolated remediation verification
+on:
+  push:
+    branches: [security/remediation-verification-20261109]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: remediation-verification
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact workflow revision without deployment credentials
+        env:
+          REPO: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${REPO}.git"
+          git fetch --depth=1 origin "$REVISION"
+          git checkout --detach FETCH_HEAD
+      - name: Install pinned verification dependencies
+        run: |
+          node --version
+          npm --version
+          if [ ! -f package.json ]; then
+            printf '%s\n' '{"name":"synergy-security-verification","version":"1.0.0","private":true}' > package.json
+          fi
+          if [ -f package-lock.json ]; then
+            npm ci --ignore-scripts --no-audit --no-fund
+          else
+            npm install --ignore-scripts --no-audit --no-fund --save-exact solc@0.8.38 @openzeppelin/contracts@5.7.0 ethers@6.17.0 hardhat@2.26.3
+          fi
+          node -e "console.log('SOLC:',require('solc').version());console.log('OPENZEPPELIN:',require('@openzeppelin/contracts/package.json').version)"
+      - name: Compile exact production sources
+        run: |
+          mkdir -p audit build
+          if [ -f scripts/compile.cjs ]; then
+            node scripts/compile.cjs
+          else
+            node <<'NODE'
+          const fs=require('fs'),solc=require('solc'),crypto=require('crypto');
+          const sources=Object.fromEntries(fs.readdirSync('contracts').filter(f=>f.endsWith('.sol')).sort().map(f=>['contracts/'+f,{content:fs.readFileSync('contracts/'+f,'utf8')}]));
+          const settings={optimizer:{enabled:true,runs:1},viaIR:true,evmVersion:'cancun',outputSelection:{'*':{'*':['abi','evm.bytecode.object','evm.deployedBytecode.object']}}};
+          const output=JSON.parse(solc.compile(JSON.stringify({language:'Solidity',sources,settings}),{import:p=>{try{return {contents:fs.readFileSync('node_modules/'+p,'utf8')}}catch{return {error:'Missing dependency '+p}}}}));
+          const report={compiler:solc.version(),sources:Object.fromEntries(Object.entries(sources).map(([p,s])=>[p,crypto.createHash('sha256').update(s.content).digest('hex')])),diagnostics:output.errors||[],sizes:{}};
+          for(const [p,cs] of Object.entries(output.contracts||{})) if(p.startsWith('contracts/')) for(const [n,c] of Object.entries(cs)) report.sizes[n]={runtime:c.evm.deployedBytecode.object.length/2,initcodeWithoutArguments:c.evm.bytecode.object.length/2};
+          fs.writeFileSync('audit/ci-compilation.json',JSON.stringify(report,null,2));
+          console.log(JSON.stringify(report,null,2));
+          if((output.errors||[]).some(e=>e.severity==='error'))process.exit(1);
+          if(Object.values(report.sizes).some(s=>s.runtime>24576||s.initcodeWithoutArguments>49152))process.exit(1);
+          NODE
+          fi
+      - name: Execute available regression suites
+        run: |
+          if [ -d test ] && ls test/*.test.cjs >/dev/null 2>&1; then
+            node --test --test-concurrency=1 test/*.test.cjs
+          else
+            echo 'REGRESSION TESTS NOT YET INSTALLED; THIS RUN IS COMPILATION ONLY'
+          fi
