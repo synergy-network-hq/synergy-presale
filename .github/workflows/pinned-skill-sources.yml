@@ -1,0 +1,38 @@
+name: Pinned skill source intake
+on:
+  push:
+    branches: [security/remediation-verification-20261109]
+    paths: [.github/workflows/pinned-skill-sources.yml]
+permissions:
+  contents: read
+jobs:
+  source-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fetch immutable public source objects without checkout or execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source-archives
+          fetch_archive() {
+            local name="$1" repo="$2" commit="$3"
+            git init --bare "$name.git"
+            git -C "$name.git" fetch --depth=1 "https://github.com/$repo.git" "$commit"
+            test "$(git -C "$name.git" rev-parse FETCH_HEAD)" = "$commit"
+            git -C "$name.git" archive --format=tar --prefix="$name/" "$commit" > "source-archives/$name.tar"
+            git -C "$name.git" ls-tree -r "$commit" > "source-archives/$name.git-tree.txt"
+            printf '%s %s %s\n' "$name" "$repo" "$commit" >> source-archives/PINNED_SOURCES.txt
+          }
+          fetch_archive openzeppelin-skills OpenZeppelin/openzeppelin-skills 584262af9eed516bdb1d2d897246502218e3917a
+          fetch_archive scv-scan kadenzipfel/scv-scan 114985581450cfed35c277831a065c6478e2c328
+          cd source-archives
+          sha256sum *.tar *.git-tree.txt PINNED_SOURCES.txt > SHA256SUMS
+      - name: Publish source archives only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pinned-contract-skill-sources
+          path: source-archives/
+          retention-days: 3
+          compression-level: 6
+          if-no-files-found: error
