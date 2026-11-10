@@ -1,0 +1,38 @@
+name: Remediation static analysis toolchain
+on:
+  push:
+    branches: [security/remediation-verification-20261109]
+    paths: [.github/workflows/remediation-static-toolchain.yml]
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download public Python wheels and pinned official compiler
+        run: |
+          mkdir -p static-tools/wheels
+          python3 -m pip download --dest static-tools/wheels --only-binary=:all: --python-version 3.13 --implementation cp --abi cp313 --abi abi3 --abi none --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64 slither-analyzer==0.11.6
+          curl -fLsS --retry 2 https://api.github.com/repos/argotorg/solidity/releases/tags/v0.8.38 -o static-tools/compiler-release.json
+          python3 - <<'PY'
+          import json,urllib.request,hashlib,pathlib
+          root=pathlib.Path('static-tools')
+          release=json.loads((root/'compiler-release.json').read_text())
+          a=next(a for a in release['assets'] if a['name']=='solc-static-linux')
+          urllib.request.urlretrieve(a['browser_download_url'],root/'solc')
+          actual='sha256:'+hashlib.sha256((root/'solc').read_bytes()).hexdigest()
+          assert actual==a['digest'],(actual,a.get('digest'))
+          (root/'solc').chmod(0o755)
+          (root/'SHA256SUMS').write_text('\n'.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(root)) for p in sorted(root.rglob('*')) if p.is_file())+'\n')
+          PY
+          static-tools/solc --version
+          tar -czf synergy-static-tools.tar.gz static-tools
+      - name: Publish toolchain without application source or credentials
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synergy-static-analysis-toolchain
+          path: synergy-static-tools.tar.gz
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
