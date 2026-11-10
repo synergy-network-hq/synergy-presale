@@ -1,0 +1,33 @@
+name: Remediation offline toolchain
+on:
+  push:
+    branches: [security/remediation-verification-20261109]
+    paths: [.github/workflows/remediation-toolchain.yml]
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install exact public verification dependencies without lifecycle scripts
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          printf '%s\n' '{"name":"synergy-offline-verification-toolchain","version":"1.0.0","private":true}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund --save-exact solc@0.8.38 @openzeppelin/contracts@5.7.0 ethers@6.17.0 hardhat@2.26.3 prettier@3.9.10 prettier-plugin-solidity@2.4.1
+          node -e "console.log(JSON.stringify({node:process.version,solc:require('solc').version(),openzeppelin:require('@openzeppelin/contracts/package.json').version}))" > TOOLCHAIN_VERSIONS.json
+          npm ls --all --json > DEPENDENCIES.json
+          tar -czf ../synergy-toolchain.tar.gz node_modules package.json package-lock.json TOOLCHAIN_VERSIONS.json DEPENDENCIES.json
+          cd ..
+          sha256sum synergy-toolchain.tar.gz > synergy-toolchain.sha256
+      - name: Publish dependency archive only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synergy-offline-toolchain
+          path: |
+            synergy-toolchain.tar.gz
+            synergy-toolchain.sha256
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
